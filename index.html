@@ -1,0 +1,40 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Retro Web Brain</title>
+  <link rel="stylesheet" href="styles.css" />
+</head>
+<body>
+  <div id="terminal">
+    <div id="header">
+      <span class="title">RETRO WEB BRAIN</span>
+      <div class="controls">
+        <label for="mode-select">MODE:</label>
+        <select id="mode-select">
+          <option value="full">FULL ANSWER</option>
+          <option value="summarize">SUMMARIZE</option>
+          <option value="images">IMAGE ONLY</option>
+        </select>
+      </div>
+    </div>
+
+    <div class="hint">
+      Commands: <code>/mode full</code>, <code>/mode summarize</code>, <code>/mode images</code>, <code>/clear</code>
+    </div>
+
+    <div id="output" aria-live="polite">
+      <div class="line system">SYSTEM READY... ENTER QUESTION.</div>
+    </div>
+
+    <div class="input-line">
+      <span>&gt;</span>
+      <input type="text" id="user-input" autocomplete="off" autofocus placeholder="Ask anything..." />
+      <button id="send-btn" type="button">SEND</button>
+    </div>
+  </div>
+
+  <script src="app.js"></script>
+</body>
+</html>
