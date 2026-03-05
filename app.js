@@ -23,6 +23,16 @@ async function onSend() {
   input.value = "";
   appendLine("user", query);
 
+  if (query.toLowerCase().startsWith("/create ")) {
+    const prompt = query.slice(8).trim();
+    if (!prompt) {
+      appendLine("error", "Usage: /create your image prompt");
+      return;
+    }
+    createLocalImage(prompt);
+    return;
+  }
+
   if (handleCommand(query)) return;
   const repeatCount = recordQuery(query);
 
@@ -126,6 +136,13 @@ async function imageOnlyMode(query, repeatCount = 0) {
   for (const item of images) {
     appendImage(item.src, item.caption);
   }
+}
+
+function createLocalImage(prompt) {
+  appendLine("system", "LOCAL IMAGE GENERATOR: NO API");
+  const dataUrl = generateProceduralImage(prompt);
+  appendLine("ai", `Generated local image for "${prompt}"`);
+  appendImage(dataUrl, `Local generated image: ${prompt}`);
 }
 
 function buildFullAnswer(query, wikiItems, duck, repeatCount) {
@@ -302,6 +319,114 @@ function escapeRegex(text) {
   return String(text).replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 }
 
+function isRelevantImageTitle(topic, title) {
+  const q = normalizeQuery(topic);
+  const t = normalizeQuery(String(title || "").replace(/^file:/i, ""));
+  if (!q || !t) return false;
+
+  if (q.length <= 4) {
+    const word = new RegExp(`\\b${escapeRegex(q)}s?\\b`, "i");
+    return word.test(title);
+  }
+
+  if (t.includes(q) || q.includes(t)) return true;
+  const qWords = q.split(" ").filter(Boolean);
+  const overlap = qWords.reduce((count, word) => {
+    const rx = new RegExp(`\\b${escapeRegex(word)}\\b`, "i");
+    return count + (rx.test(title) ? 1 : 0);
+  }, 0);
+  return overlap >= Math.ceil(qWords.length / 2);
+}
+
+function dedupeImages(images) {
+  const seen = new Set();
+  const out = [];
+  for (const item of images) {
+    const src = String(item?.src || "");
+    if (!src) continue;
+    if (seen.has(src)) continue;
+    seen.add(src);
+    out.push(item);
+  }
+  return out;
+}
+
+function generateProceduralImage(prompt, width = 1024, height = 640) {
+  const canvas = document.createElement("canvas");
+  canvas.width = width;
+  canvas.height = height;
+  const ctx = canvas.getContext("2d");
+  const seedBase = hashString(prompt || "image");
+
+  const c1 = colorFromSeed(seedBase + 17, 55, 28);
+  const c2 = colorFromSeed(seedBase + 43, 70, 18);
+  const c3 = colorFromSeed(seedBase + 91, 65, 12);
+  const gradient = ctx.createLinearGradient(0, 0, width, height);
+  gradient.addColorStop(0, c1);
+  gradient.addColorStop(0.5, c2);
+  gradient.addColorStop(1, c3);
+  ctx.fillStyle = gradient;
+  ctx.fillRect(0, 0, width, height);
+
+  const shapeCount = 22 + (seedBase % 18);
+  for (let i = 0; i < shapeCount; i++) {
+    const s = seedBase + i * 9973;
+    const x = seededFloat(s + 1) * width;
+    const y = seededFloat(s + 2) * height;
+    const radius = 10 + seededFloat(s + 3) * (Math.min(width, height) * 0.2);
+    const alpha = 0.12 + seededFloat(s + 4) * 0.36;
+    const color = colorFromSeed(s + 5, 75, 60, alpha);
+
+    ctx.beginPath();
+    if (seededFloat(s + 6) > 0.4) {
+      ctx.arc(x, y, radius, 0, Math.PI * 2);
+      ctx.fillStyle = color;
+      ctx.fill();
+    } else {
+      const w = radius * (1.2 + seededFloat(s + 7) * 2);
+      const h = radius * (0.8 + seededFloat(s + 8) * 2);
+      ctx.fillStyle = color;
+      ctx.fillRect(x - w / 2, y - h / 2, w, h);
+    }
+  }
+
+  ctx.fillStyle = "rgba(0,0,0,0.08)";
+  for (let y = 0; y < height; y += 4) {
+    ctx.fillRect(0, y, width, 1);
+  }
+
+  ctx.fillStyle = "rgba(255,255,255,0.85)";
+  ctx.font = "bold 32px monospace";
+  ctx.fillText("LOCAL GENERATOR", 28, 46);
+  ctx.font = "24px monospace";
+  ctx.fillStyle = "rgba(255,255,255,0.75)";
+  const label = trimToChars(prompt, 70);
+  ctx.fillText(label, 28, height - 26);
+
+  return canvas.toDataURL("image/png");
+}
+
+function hashString(text) {
+  let h = 2166136261;
+  for (let i = 0; i < text.length; i++) {
+    h ^= text.charCodeAt(i);
+    h = Math.imul(h, 16777619);
+  }
+  return h >>> 0;
+}
+
+function seededFloat(seed) {
+  let x = (seed >>> 0) + 0x6d2b79f5;
+  x = Math.imul(x ^ (x >>> 15), 1 | x);
+  x ^= x + Math.imul(x ^ (x >>> 7), 61 | x);
+  return ((x ^ (x >>> 14)) >>> 0) / 4294967296;
+}
+
+function colorFromSeed(seed, sat = 70, light = 50, alpha = 1) {
+  const hue = Math.floor(seededFloat(seed) * 360);
+  return `hsla(${hue} ${sat}% ${light}% / ${alpha})`;
+}
+
 function summarizeLocally(text, query, maxSentences = 2, maxChars = 320) {
   const clean = text.replace(/\s+/g, " ").trim();
   if (!clean) return "No summary available.";
@@ -358,6 +483,21 @@ async function getWikiResults(query, limit = 5) {
 }
 
 async function getTopicImages(topic, limit = 6, repeatCount = 0) {
+  const [wikiImagesResult, commonsImagesResult] = await Promise.allSettled([
+    getWikipediaTopicImages(topic, limit, repeatCount),
+    getWikimediaImages(topic, Math.max(limit * 4, 18), repeatCount),
+  ]);
+
+  const wikiImages = wikiImagesResult.status === "fulfilled" ? wikiImagesResult.value : [];
+  const commonsImages = commonsImagesResult.status === "fulfilled" ? commonsImagesResult.value : [];
+  const merged = dedupeImages([...commonsImages, ...wikiImages]);
+  if (!merged.length) return [];
+
+  const rotated = rotateArray(merged, Math.max(0, repeatCount));
+  return rotated.slice(0, limit);
+}
+
+async function getWikipediaTopicImages(topic, limit = 6, repeatCount = 0) {
   const offset = Math.max(0, repeatCount) * limit;
   const titles = await wikiSearchTitles(topic, Math.max(limit * 4, 20), offset);
   if (!titles.length) return [];
@@ -385,9 +525,45 @@ async function getTopicImages(topic, limit = 6, repeatCount = 0) {
     });
     if (images.length >= limit) break;
   }
-  if (!images.length) return [];
-  const rotated = rotateArray(images, Math.max(0, repeatCount));
-  return rotated.slice(0, limit);
+  return images;
+}
+
+async function getWikimediaImages(topic, limit = 24, repeatCount = 0) {
+  const gsrOffset = Math.max(0, repeatCount) * Math.max(6, Math.floor(limit / 2));
+  const search = `${topic} filetype:bitmap`;
+  const url =
+    `https://commons.wikimedia.org/w/api.php?action=query&generator=search` +
+    `&gsrsearch=${encodeURIComponent(search)}` +
+    `&gsrnamespace=6&gsrlimit=${Math.min(Math.max(limit, 1), 50)}` +
+    `&gsroffset=${gsrOffset}` +
+    `&prop=imageinfo&iiprop=url&iiurlwidth=900&format=json&origin=*`;
+
+  try {
+    const res = await fetch(url);
+    if (!res.ok) return [];
+    const data = await res.json();
+    const pages = Object.values(data?.query?.pages || {});
+    const images = [];
+    const seen = new Set();
+
+    for (const page of pages) {
+      const title = String(page?.title || "");
+      const imageInfo = page?.imageinfo?.[0] || {};
+      const src = imageInfo.thumburl || imageInfo.url || "";
+      if (!src) continue;
+      if (!/\.(png|jpe?g|webp|gif)(\?|$)/i.test(src)) continue;
+      if (!isRelevantImageTitle(topic, title)) continue;
+      if (seen.has(src)) continue;
+      seen.add(src);
+      images.push({
+        src,
+        caption: title.replace(/^File:/i, ""),
+      });
+    }
+    return images;
+  } catch {
+    return [];
+  }
 }
 
 async function wikiSearchTitles(query, limit = 1, offset = 0) {
