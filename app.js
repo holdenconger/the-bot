@@ -37,7 +37,7 @@ async function onSend() {
   }
 
   if (currentMode === "images") {
-    await imageOnlyMode(query);
+    await imageOnlyMode(query, repeatCount);
     return;
   }
 
@@ -82,7 +82,8 @@ async function answerTextMode(query, mode, repeatCount) {
     getDuckResult(query),
   ]);
 
-  const wikiItems = wikiResult.status === "fulfilled" ? wikiResult.value : [];
+  const wikiItemsRaw = wikiResult.status === "fulfilled" ? wikiResult.value : [];
+  const wikiItems = selectRelevantWiki(query, wikiItemsRaw);
   const duck = duckResult.status === "fulfilled" ? duckResult.value : null;
 
   const built = buildFullAnswer(query, wikiItems, duck, repeatCount);
@@ -93,7 +94,8 @@ async function answerTextMode(query, mode, repeatCount) {
   }
 
   if (mode === "summarize") {
-    const summarized = await summarizeSmart(longAnswer, query, repeatCount);
+    const summarySeed = buildSummarySeed(query, wikiItems, duck, repeatCount) || longAnswer;
+    const summarized = await summarizeSmart(summarySeed, query, repeatCount);
     if (summarized.source === "browser-api") {
       appendLine("system", "SUMMARIZER API: BROWSER MODEL");
     } else {
@@ -111,9 +113,9 @@ async function answerTextMode(query, mode, repeatCount) {
   }
 }
 
-async function imageOnlyMode(query) {
+async function imageOnlyMode(query, repeatCount = 0) {
   appendLine("system", "IMAGE MODE ACTIVE: FETCHING IMAGES...");
-  const images = await getTopicImages(query, 6);
+  const images = await getTopicImages(query, 6, repeatCount);
 
   if (!images.length) {
     appendLine("error", "No images found. Try a clearer topic.");
@@ -183,6 +185,41 @@ async function summarizeSmart(text, query, repeatCount) {
   return { text: localSummary, source: "local" };
 }
 
+function buildSummarySeed(query, wikiItems, duck, repeatCount) {
+  const safeRepeatCount = Math.max(0, repeatCount || 0);
+  const parts = [];
+  const wiki = Array.isArray(wikiItems) ? wikiItems.filter((x) => x?.summary) : [];
+
+  if (wiki.length) {
+    const idx = safeRepeatCount % wiki.length;
+    const oneLine = firstSentence(wiki[idx].summary, 220);
+    parts.push(`${wiki[idx].title || "Topic"}: ${oneLine}`);
+  }
+
+  const duckChoices = [
+    duck?.text || "",
+    ...(duck?.relatedTexts || []),
+  ].filter(Boolean);
+  if (duckChoices.length) {
+    const idx = safeRepeatCount % duckChoices.length;
+    parts.push(`Web note: ${firstSentence(duckChoices[idx], 180)}`);
+  }
+
+  if (!parts.length) {
+    parts.push(`No summary result found for "${query}".`);
+  }
+
+  return parts.join(" ");
+}
+
+function firstSentence(text, maxChars = 220) {
+  const clean = (text || "").replace(/\s+/g, " ").trim();
+  if (!clean) return "";
+  const first = clean.match(/[^.!?]+[.!?]?/);
+  const sentence = first ? first[0].trim() : clean;
+  return trimToChars(sentence, maxChars);
+}
+
 async function summarizeWithBrowserAPI(text, type = "tl;dr", length = "short") {
   if (!("Summarizer" in window)) return "";
   try {
@@ -212,6 +249,57 @@ function recordQuery(query) {
 
 function normalizeQuery(query) {
   return query.toLowerCase().replace(/\s+/g, " ").trim();
+}
+
+function filterTitlesByRelevance(query, titles) {
+  const q = normalizeQuery(query);
+  const qWords = q.split(" ").filter(Boolean);
+  const exactWord = new RegExp(`\\b${escapeRegex(q)}\\b`, "i");
+  const shortPlural = new RegExp(`\\b${escapeRegex(q)}s\\b`, "i");
+
+  return (titles || []).filter((title) => {
+    const t = normalizeQuery(title || "");
+    if (!t) return false;
+
+    // Keep exact word matches for short searches like "cat".
+    if (q.length <= 4) {
+      return exactWord.test(title) || shortPlural.test(title);
+    }
+    if (t === q || t.includes(q) || q.includes(t)) return true;
+
+    const overlap = qWords.reduce((count, word) => {
+      const rx = new RegExp(`\\b${escapeRegex(word)}\\b`, "i");
+      return count + (rx.test(title) ? 1 : 0);
+    }, 0);
+
+    return overlap >= Math.ceil(qWords.length / 2);
+  });
+}
+
+function selectRelevantWiki(query, wikiItems) {
+  const filtered = (wikiItems || []).filter((item) => item?.title || item?.summary);
+  if (!filtered.length) return [];
+
+  const titleFiltered = filterTitlesByRelevance(
+    query,
+    filtered.map((x) => x.title || "")
+  );
+  if (!titleFiltered.length) return filtered;
+
+  const titleSet = new Set(titleFiltered.map((x) => normalizeQuery(x)));
+  const narrowed = filtered.filter((item) => titleSet.has(normalizeQuery(item.title || "")));
+  return narrowed.length ? narrowed : filtered;
+}
+
+function rotateArray(items, shiftBy = 0) {
+  if (!Array.isArray(items) || !items.length) return [];
+  const shift = ((shiftBy % items.length) + items.length) % items.length;
+  if (shift === 0) return [...items];
+  return items.slice(shift).concat(items.slice(0, shift));
+}
+
+function escapeRegex(text) {
+  return String(text).replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 }
 
 function summarizeLocally(text, query, maxSentences = 2, maxChars = 320) {
@@ -269,8 +357,9 @@ async function getWikiResults(query, limit = 5) {
   return results.filter(Boolean);
 }
 
-async function getTopicImages(topic, limit = 6) {
-  const titles = await wikiSearchTitles(topic, Math.max(limit, 6));
+async function getTopicImages(topic, limit = 6, repeatCount = 0) {
+  const offset = Math.max(0, repeatCount) * limit;
+  const titles = await wikiSearchTitles(topic, Math.max(limit * 4, 20), offset);
   if (!titles.length) return [];
 
   const summaries = await Promise.all(
@@ -283,9 +372,10 @@ async function getTopicImages(topic, limit = 6) {
     })
   );
 
+  const relevantSummaries = selectRelevantWiki(topic, summaries.filter(Boolean));
   const images = [];
   const seen = new Set();
-  for (const item of summaries) {
+  for (const item of relevantSummaries) {
     if (!item?.image) continue;
     if (seen.has(item.image)) continue;
     seen.add(item.image);
@@ -295,15 +385,46 @@ async function getTopicImages(topic, limit = 6) {
     });
     if (images.length >= limit) break;
   }
-  return images;
+  if (!images.length) return [];
+  const rotated = rotateArray(images, Math.max(0, repeatCount));
+  return rotated.slice(0, limit);
 }
 
-async function wikiSearchTitles(query, limit = 1) {
-  const url = `https://en.wikipedia.org/w/api.php?action=opensearch&search=${encodeURIComponent(query)}&limit=${limit}&namespace=0&format=json&origin=*`;
-  const res = await fetch(url);
-  if (!res.ok) return [];
-  const data = await res.json();
-  return Array.isArray(data?.[1]) ? data[1] : [];
+async function wikiSearchTitles(query, limit = 1, offset = 0) {
+  const cleanQuery = (query || "").trim();
+  if (!cleanQuery) return [];
+
+  const phrase = `"${cleanQuery.replace(/"/g, "")}"`;
+  const srsearch = cleanQuery.includes(" ")
+    ? `${phrase} ${cleanQuery}`
+    : `intitle:${phrase} ${cleanQuery}`;
+
+  const searchUrl =
+    `https://en.wikipedia.org/w/api.php?action=query&list=search` +
+    `&srsearch=${encodeURIComponent(srsearch)}` +
+    `&srlimit=${Math.min(Math.max(limit, 1), 50)}` +
+    `&sroffset=${Math.max(0, offset)}` +
+    `&srnamespace=0&format=json&origin=*`;
+
+  try {
+    const res = await fetch(searchUrl);
+    if (!res.ok) throw new Error("search failed");
+    const data = await res.json();
+    const titles = Array.isArray(data?.query?.search)
+      ? data.query.search.map((x) => x.title).filter(Boolean)
+      : [];
+    const relevant = filterTitlesByRelevance(cleanQuery, titles);
+    return (relevant.length ? relevant : titles).slice(0, limit);
+  } catch {
+    // Fallback if search endpoint fails.
+    const fallbackUrl = `https://en.wikipedia.org/w/api.php?action=opensearch&search=${encodeURIComponent(cleanQuery)}&limit=${limit}&namespace=0&format=json&origin=*`;
+    const fallbackRes = await fetch(fallbackUrl);
+    if (!fallbackRes.ok) return [];
+    const fallbackData = await fallbackRes.json();
+    const titles = Array.isArray(fallbackData?.[1]) ? fallbackData[1] : [];
+    const relevant = filterTitlesByRelevance(cleanQuery, titles);
+    return (relevant.length ? relevant : titles).slice(0, limit);
+  }
 }
 
 async function getWikiSummary(title) {
