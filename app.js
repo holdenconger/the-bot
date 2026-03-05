@@ -2,6 +2,7 @@ const input = document.getElementById("user-input");
 const sendBtn = document.getElementById("send-btn");
 const output = document.getElementById("output");
 const modeSelect = document.getElementById("mode-select");
+const queryCounts = new Map();
 
 let currentMode = modeSelect.value;
 
@@ -23,6 +24,7 @@ async function onSend() {
   appendLine("user", query);
 
   if (handleCommand(query)) return;
+  const repeatCount = recordQuery(query);
 
   if (isMathExpression(query) && currentMode !== "images") {
     try {
@@ -39,7 +41,7 @@ async function onSend() {
     return;
   }
 
-  await answerTextMode(query, currentMode);
+  await answerTextMode(query, currentMode, repeatCount);
 }
 
 function handleCommand(query) {
@@ -72,33 +74,40 @@ function labelForMode(mode) {
   return "IMAGE ONLY";
 }
 
-async function answerTextMode(query, mode) {
+async function answerTextMode(query, mode, repeatCount) {
   appendLine("system", "FETCHING WIKIPEDIA + DUCKDUCKGO...");
 
   const [wikiResult, duckResult] = await Promise.allSettled([
-    getBestWikiResult(query),
+    getWikiResults(query, 5),
     getDuckResult(query),
   ]);
 
-  const wiki = wikiResult.status === "fulfilled" ? wikiResult.value : null;
+  const wikiItems = wikiResult.status === "fulfilled" ? wikiResult.value : [];
   const duck = duckResult.status === "fulfilled" ? duckResult.value : null;
 
-  const longAnswer = buildFullAnswer(query, wiki, duck);
+  const built = buildFullAnswer(query, wikiItems, duck, repeatCount);
+  const longAnswer = built.text;
   if (!longAnswer) {
     appendLine("error", "No useful result. Try a more specific question.");
     return;
   }
 
   if (mode === "summarize") {
-    // Local summarizer: no external summarize API call.
-    const summarized = summarizeLocally(longAnswer, query, 2, 300);
-    typeLine("ai", summarized);
+    const summarized = await summarizeSmart(longAnswer, query, repeatCount);
+    if (summarized.source === "browser-api") {
+      appendLine("system", "SUMMARIZER API: BROWSER MODEL");
+    } else {
+      appendLine("system", "SUMMARIZER API UNAVAILABLE: LOCAL FALLBACK");
+    }
+    typeLine("ai", summarized.text);
   } else {
     typeLine("ai", longAnswer);
   }
 
-  if (wiki?.image) {
-    appendImage(wiki.image, wiki.title || "Wikipedia image");
+  if (built.primaryWiki?.image) {
+    appendImage(built.primaryWiki.image, built.primaryWiki.title || "Wikipedia image");
+  } else if (wikiItems?.[0]?.image) {
+    appendImage(wikiItems[0].image, wikiItems[0].title || "Wikipedia image");
   }
 }
 
@@ -117,26 +126,92 @@ async function imageOnlyMode(query) {
   }
 }
 
-function buildFullAnswer(query, wiki, duck) {
+function buildFullAnswer(query, wikiItems, duck, repeatCount) {
+  const safeRepeatCount = Math.max(0, repeatCount || 0);
   const parts = [];
+  const normalizedWiki = Array.isArray(wikiItems) ? wikiItems.filter((x) => x?.summary) : [];
+  let primaryWiki = null;
 
-  if (wiki?.title || wiki?.summary) {
-    const heading = wiki.title ? `${wiki.title}` : "Wikipedia";
-    const body = wiki.summary || "";
-    if (body) parts.push(`${heading}: ${body}`);
+  if (normalizedWiki.length) {
+    const firstIndex = safeRepeatCount % normalizedWiki.length;
+    const secondIndex = (firstIndex + 1) % normalizedWiki.length;
+    primaryWiki = normalizedWiki[firstIndex];
+    parts.push(`${primaryWiki.title || "Wikipedia"}: ${primaryWiki.summary}`);
+    if (normalizedWiki.length > 1) {
+      const secondaryWiki = normalizedWiki[secondIndex];
+      parts.push(`Another source (${secondaryWiki.title || "Wikipedia"}): ${secondaryWiki.summary}`);
+    }
   }
 
-  if (duck?.text) {
-    parts.push(`DuckDuckGo: ${duck.text}`);
+  const duckChoices = [
+    duck?.text || "",
+    ...(duck?.relatedTexts || []),
+  ].filter(Boolean);
+  if (duckChoices.length) {
+    const idx = safeRepeatCount % duckChoices.length;
+    parts.push(`DuckDuckGo: ${duckChoices[idx]}`);
   }
 
-  if (!parts.length) return "";
+  if (!parts.length) return { text: "", primaryWiki: null };
 
-  if (!wiki?.summary && !duck?.text) {
+  if (!normalizedWiki.length && !duckChoices.length) {
     parts.push(`No direct match found for "${query}".`);
   }
 
-  return parts.join("\n\n");
+  if (safeRepeatCount > 0) {
+    parts.push(`Fresh angle: response mix #${safeRepeatCount + 1}.`);
+  }
+
+  return {
+    text: parts.join("\n\n"),
+    primaryWiki,
+  };
+}
+
+async function summarizeSmart(text, query, repeatCount) {
+  const styleCycle = ["tl;dr", "key-points", "teaser"];
+  const lengthCycle = ["short", "medium", "short"];
+  const style = styleCycle[repeatCount % styleCycle.length];
+  const length = lengthCycle[repeatCount % lengthCycle.length];
+
+  const browserSummary = await summarizeWithBrowserAPI(text, style, length);
+  if (browserSummary) {
+    return { text: trimToChars(browserSummary, 520), source: "browser-api" };
+  }
+
+  const localSummary = summarizeLocally(text, query, repeatCount > 0 ? 3 : 2, repeatCount > 0 ? 420 : 320);
+  return { text: localSummary, source: "local" };
+}
+
+async function summarizeWithBrowserAPI(text, type = "tl;dr", length = "short") {
+  if (!("Summarizer" in window)) return "";
+  try {
+    const availability = await window.Summarizer.availability();
+    if (availability === "unavailable") return "";
+
+    const summarizer = await window.Summarizer.create({
+      type,
+      format: "plain-text",
+      length,
+    });
+
+    const result = await summarizer.summarize(text);
+    if (typeof summarizer.destroy === "function") summarizer.destroy();
+    return typeof result === "string" ? result.trim() : "";
+  } catch {
+    return "";
+  }
+}
+
+function recordQuery(query) {
+  const key = normalizeQuery(query);
+  const count = queryCounts.get(key) || 0;
+  queryCounts.set(key, count + 1);
+  return count;
+}
+
+function normalizeQuery(query) {
+  return query.toLowerCase().replace(/\s+/g, " ").trim();
 }
 
 function summarizeLocally(text, query, maxSentences = 2, maxChars = 320) {
@@ -178,10 +253,20 @@ function trimToChars(text, maxChars) {
   return `${text.slice(0, maxChars - 3).trim()}...`;
 }
 
-async function getBestWikiResult(query) {
-  const titles = await wikiSearchTitles(query, 1);
-  if (!titles.length) return null;
-  return getWikiSummary(titles[0]);
+async function getWikiResults(query, limit = 5) {
+  const titles = await wikiSearchTitles(query, limit);
+  if (!titles.length) return [];
+
+  const results = await Promise.all(
+    titles.map(async (title) => {
+      try {
+        return await getWikiSummary(title);
+      } catch {
+        return null;
+      }
+    })
+  );
+  return results.filter(Boolean);
 }
 
 async function getTopicImages(topic, limit = 6) {
@@ -241,21 +326,23 @@ async function getDuckResult(query) {
   const data = await res.json();
 
   let text = data.AbstractText || data.Answer || data.Definition || "";
-  if (!text) text = firstRelatedTopic(data.RelatedTopics || []);
-  if (!text) return null;
+  const relatedTexts = collectRelatedTopics(data.RelatedTopics || [], []);
+  if (!text) text = relatedTexts[0] || "";
+  if (!text && !relatedTexts.length) return null;
 
-  return { text };
+  return { text, relatedTexts };
 }
 
-function firstRelatedTopic(topics) {
+function collectRelatedTopics(topics, bucket = []) {
   for (const item of topics) {
-    if (item?.Text) return item.Text;
+    if (item?.Text) {
+      bucket.push(item.Text);
+    }
     if (Array.isArray(item?.Topics)) {
-      const nested = firstRelatedTopic(item.Topics);
-      if (nested) return nested;
+      collectRelatedTopics(item.Topics, bucket);
     }
   }
-  return "";
+  return bucket;
 }
 
 function isMathExpression(text) {
