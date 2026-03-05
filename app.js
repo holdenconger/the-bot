@@ -356,54 +356,526 @@ function generateProceduralImage(prompt, width = 1024, height = 640) {
   canvas.width = width;
   canvas.height = height;
   const ctx = canvas.getContext("2d");
-  const seedBase = hashString(prompt || "image");
+  const seed = hashString(prompt || "image");
+  const spec = parseImagePrompt(prompt);
+  const horizon = Math.floor(height * 0.62);
 
-  const c1 = colorFromSeed(seedBase + 17, 55, 28);
-  const c2 = colorFromSeed(seedBase + 43, 70, 18);
-  const c3 = colorFromSeed(seedBase + 91, 65, 12);
-  const gradient = ctx.createLinearGradient(0, 0, width, height);
-  gradient.addColorStop(0, c1);
-  gradient.addColorStop(0.5, c2);
-  gradient.addColorStop(1, c3);
-  ctx.fillStyle = gradient;
-  ctx.fillRect(0, 0, width, height);
+  drawSky(ctx, width, height, horizon, spec, seed);
+  drawEnvironment(ctx, width, height, horizon, spec, seed);
+  drawForeground(ctx, width, height, horizon, spec, seed);
+  drawSubject(ctx, width, height, horizon, spec, seed);
+  drawFilmOverlay(ctx, width, height, spec);
 
-  const shapeCount = 22 + (seedBase % 18);
-  for (let i = 0; i < shapeCount; i++) {
-    const s = seedBase + i * 9973;
-    const x = seededFloat(s + 1) * width;
-    const y = seededFloat(s + 2) * height;
-    const radius = 10 + seededFloat(s + 3) * (Math.min(width, height) * 0.2);
-    const alpha = 0.12 + seededFloat(s + 4) * 0.36;
-    const color = colorFromSeed(s + 5, 75, 60, alpha);
+  return canvas.toDataURL("image/png");
+}
 
-    ctx.beginPath();
-    if (seededFloat(s + 6) > 0.4) {
-      ctx.arc(x, y, radius, 0, Math.PI * 2);
-      ctx.fillStyle = color;
+function parseImagePrompt(prompt) {
+  const text = normalizeQuery(prompt || "");
+  const count = readSubjectCount(text);
+
+  const subject = pickFirst(text, [
+    "cat",
+    "dog",
+    "bird",
+    "robot",
+    "car",
+    "house",
+    "tree",
+    "dragon",
+  ]) || "shape";
+
+  const scene = pickFirst(text, [
+    "city",
+    "ocean",
+    "beach",
+    "forest",
+    "mountain",
+    "desert",
+    "space",
+    "galaxy",
+    "snow",
+  ]) || "land";
+
+  const style = pickFirst(text, ["neon", "cyberpunk", "retro", "pixel", "pastel"]) || "default";
+  const time = pickFirst(text, ["night", "sunset", "dawn", "day"]) || "day";
+  const colorWord = pickFirst(text, [
+    "red",
+    "blue",
+    "green",
+    "purple",
+    "pink",
+    "yellow",
+    "orange",
+    "teal",
+    "white",
+    "black",
+  ]) || "";
+
+  return { text, subject, scene, style, time, colorWord, count };
+}
+
+function readSubjectCount(text) {
+  const map = { one: 1, two: 2, three: 3, four: 4 };
+  for (const [word, num] of Object.entries(map)) {
+    if (new RegExp(`\\b${word}\\b`, "i").test(text)) return num;
+  }
+  const digit = text.match(/\b([1-4])\b/);
+  if (digit) return Number(digit[1]);
+  return 1;
+}
+
+function pickFirst(text, choices) {
+  for (const item of choices) {
+    if (new RegExp(`\\b${escapeRegex(item)}\\b`, "i").test(text)) return item;
+  }
+  return "";
+}
+
+function drawSky(ctx, width, height, horizon, spec, seed) {
+  const palette = getSkyPalette(spec, seed);
+  const g = ctx.createLinearGradient(0, 0, 0, horizon);
+  g.addColorStop(0, palette.top);
+  g.addColorStop(0.55, palette.mid);
+  g.addColorStop(1, palette.bottom);
+  ctx.fillStyle = g;
+  ctx.fillRect(0, 0, width, horizon);
+
+  if (spec.time === "night" || spec.scene === "space" || spec.scene === "galaxy") {
+    const stars = 80 + (seed % 80);
+    for (let i = 0; i < stars; i++) {
+      const x = seededFloat(seed + i * 13) * width;
+      const y = seededFloat(seed + i * 29) * (horizon - 6);
+      const r = 0.6 + seededFloat(seed + i * 43) * 2.4;
+      ctx.fillStyle = `rgba(255,255,255,${0.25 + seededFloat(seed + i * 7) * 0.7})`;
+      ctx.beginPath();
+      ctx.arc(x, y, r, 0, Math.PI * 2);
       ctx.fill();
-    } else {
-      const w = radius * (1.2 + seededFloat(s + 7) * 2);
-      const h = radius * (0.8 + seededFloat(s + 8) * 2);
-      ctx.fillStyle = color;
-      ctx.fillRect(x - w / 2, y - h / 2, w, h);
     }
   }
 
-  ctx.fillStyle = "rgba(0,0,0,0.08)";
+  const orbX = width * (0.2 + seededFloat(seed + 101) * 0.6);
+  const orbY = horizon * (0.16 + seededFloat(seed + 103) * 0.28);
+  const orbR = Math.max(24, Math.floor(width * 0.05));
+  ctx.beginPath();
+  ctx.arc(orbX, orbY, orbR, 0, Math.PI * 2);
+  ctx.fillStyle = spec.time === "night" ? "rgba(240,245,255,0.85)" : "rgba(255,240,210,0.9)";
+  ctx.fill();
+}
+
+function getSkyPalette(spec, seed) {
+  if (spec.style === "neon" || spec.style === "cyberpunk") {
+    return {
+      top: "hsl(256 90% 20%)",
+      mid: "hsl(286 85% 30%)",
+      bottom: "hsl(198 95% 48%)",
+    };
+  }
+  if (spec.time === "night" || spec.scene === "space") {
+    return {
+      top: "hsl(228 52% 12%)",
+      mid: "hsl(238 45% 19%)",
+      bottom: "hsl(251 42% 30%)",
+    };
+  }
+  if (spec.time === "sunset" || spec.time === "dawn") {
+    return {
+      top: "hsl(18 88% 56%)",
+      mid: "hsl(32 85% 62%)",
+      bottom: "hsl(45 92% 74%)",
+    };
+  }
+  const base = Math.floor(seededFloat(seed + 61) * 40) + 190;
+  return {
+    top: `hsl(${base} 70% 36%)`,
+    mid: `hsl(${base - 10} 66% 52%)`,
+    bottom: `hsl(${base - 20} 70% 66%)`,
+  };
+}
+
+function drawEnvironment(ctx, width, height, horizon, spec, seed) {
+  if (spec.scene === "ocean" || spec.scene === "beach") {
+    drawOcean(ctx, width, height, horizon, seed, spec);
+    if (spec.scene === "beach") drawBeach(ctx, width, height, horizon);
+    return;
+  }
+  if (spec.scene === "city") {
+    drawGround(ctx, width, height, horizon, "hsl(220 15% 18%)");
+    drawCity(ctx, width, height, horizon, seed, spec);
+    return;
+  }
+  if (spec.scene === "forest") {
+    drawGround(ctx, width, height, horizon, "hsl(132 30% 28%)");
+    drawMountains(ctx, width, height, horizon, seed, "hsl(145 23% 24%)");
+    drawForest(ctx, width, height, horizon, seed);
+    return;
+  }
+  if (spec.scene === "mountain" || spec.scene === "snow") {
+    drawGround(ctx, width, height, horizon, spec.scene === "snow" ? "hsl(210 30% 88%)" : "hsl(132 20% 24%)");
+    drawMountains(ctx, width, height, horizon, seed, spec.scene === "snow" ? "hsl(214 18% 68%)" : "hsl(212 15% 30%)");
+    return;
+  }
+  if (spec.scene === "desert") {
+    drawGround(ctx, width, height, horizon, "hsl(38 65% 62%)");
+    drawDunes(ctx, width, height, horizon, seed);
+    return;
+  }
+  if (spec.scene === "space" || spec.scene === "galaxy") {
+    drawGround(ctx, width, height, horizon, "hsl(244 30% 12%)");
+    drawNebula(ctx, width, height, horizon, seed);
+    return;
+  }
+
+  drawGround(ctx, width, height, horizon, "hsl(126 28% 34%)");
+  drawMountains(ctx, width, height, horizon, seed, "hsl(212 14% 36%)");
+}
+
+function drawForeground(ctx, width, height, horizon, spec, seed) {
+  if (spec.style === "neon" || spec.style === "cyberpunk") {
+    ctx.strokeStyle = "rgba(80,255,240,0.5)";
+    ctx.lineWidth = 1;
+    for (let x = 0; x < width; x += 32) {
+      ctx.beginPath();
+      ctx.moveTo(x, height);
+      ctx.lineTo(width / 2, horizon);
+      ctx.stroke();
+    }
+  }
+  if (spec.style === "retro") {
+    ctx.fillStyle = "rgba(0,0,0,0.06)";
+    for (let y = 0; y < height; y += 3) {
+      ctx.fillRect(0, y, width, 1);
+    }
+  }
+
+  // Prompt text at bottom for traceability.
+  ctx.fillStyle = "rgba(255,255,255,0.78)";
+  ctx.font = "22px monospace";
+  ctx.fillText(trimToChars(spec.text || "local image", 68), 20, height - 18);
+
+  if (spec.style === "pixel") {
+    pixelateCanvas(ctx, width, height, 4);
+  }
+
+  // subtle deterministic noise dots
+  const dots = 90;
+  for (let i = 0; i < dots; i++) {
+    const x = seededFloat(seed + i * 71) * width;
+    const y = horizon + seededFloat(seed + i * 89) * (height - horizon);
+    ctx.fillStyle = `rgba(0,0,0,${0.03 + seededFloat(seed + i * 97) * 0.06})`;
+    ctx.fillRect(x, y, 1, 1);
+  }
+}
+
+function drawSubject(ctx, width, height, horizon, spec, seed) {
+  const color = getSubjectColor(spec, seed);
+  const n = Math.max(1, Math.min(3, spec.count || 1));
+  const span = Math.min(width * 0.55, 540);
+  const startX = width / 2 - span / 2;
+  const step = n === 1 ? 0 : span / (n - 1);
+
+  for (let i = 0; i < n; i++) {
+    const x = n === 1 ? width * 0.5 : startX + step * i;
+    const s = 0.9 + seededFloat(seed + i * 41) * 0.5;
+    const y = horizon + 18 + seededFloat(seed + i * 47) * 26;
+    if (spec.subject === "cat") drawCat(ctx, x, y, 95 * s, color);
+    else if (spec.subject === "dog") drawDog(ctx, x, y, 95 * s, color);
+    else if (spec.subject === "bird") drawBird(ctx, x, y - 120, 64 * s, color);
+    else if (spec.subject === "robot") drawRobot(ctx, x, y, 88 * s, color);
+    else if (spec.subject === "car") drawCar(ctx, x, y + 10, 110 * s, color);
+    else if (spec.subject === "house") drawHouse(ctx, x, y + 10, 110 * s, color);
+    else if (spec.subject === "tree") drawTree(ctx, x, y + 16, 115 * s, color);
+    else if (spec.subject === "dragon") drawDragon(ctx, x, y - 10, 120 * s, color);
+    else drawAbstractSubject(ctx, x, y, 100 * s, color);
+  }
+}
+
+function getSubjectColor(spec, seed) {
+  const map = {
+    red: "hsl(4 75% 52%)",
+    blue: "hsl(213 70% 52%)",
+    green: "hsl(129 52% 42%)",
+    purple: "hsl(280 54% 52%)",
+    pink: "hsl(331 74% 62%)",
+    yellow: "hsl(47 90% 58%)",
+    orange: "hsl(28 88% 56%)",
+    teal: "hsl(178 62% 46%)",
+    white: "hsl(0 0% 92%)",
+    black: "hsl(0 0% 12%)",
+  };
+  if (map[spec.colorWord]) return map[spec.colorWord];
+  const hue = Math.floor(seededFloat(seed + 177) * 360);
+  return `hsl(${hue} 60% 46%)`;
+}
+
+function drawGround(ctx, width, height, horizon, color) {
+  ctx.fillStyle = color;
+  ctx.fillRect(0, horizon, width, height - horizon);
+}
+
+function drawMountains(ctx, width, height, horizon, seed, color) {
+  ctx.fillStyle = color;
+  const peaks = 6;
+  const step = width / (peaks - 1);
+  ctx.beginPath();
+  ctx.moveTo(0, horizon);
+  for (let i = 0; i < peaks; i++) {
+    const x = i * step;
+    const y = horizon - (60 + seededFloat(seed + i * 53) * 120);
+    ctx.lineTo(x, y);
+  }
+  ctx.lineTo(width, horizon);
+  ctx.closePath();
+  ctx.fill();
+}
+
+function drawOcean(ctx, width, height, horizon, seed, spec) {
+  const top = spec.style === "neon" ? "hsl(196 90% 42%)" : "hsl(199 62% 44%)";
+  const bot = spec.style === "neon" ? "hsl(229 90% 24%)" : "hsl(205 56% 30%)";
+  const g = ctx.createLinearGradient(0, horizon, 0, height);
+  g.addColorStop(0, top);
+  g.addColorStop(1, bot);
+  ctx.fillStyle = g;
+  ctx.fillRect(0, horizon, width, height - horizon);
+
+  ctx.strokeStyle = "rgba(255,255,255,0.28)";
+  ctx.lineWidth = 1.3;
+  for (let i = 0; i < 14; i++) {
+    const y = horizon + 6 + i * 18;
+    ctx.beginPath();
+    for (let x = 0; x <= width; x += 20) {
+      const wave = Math.sin((x / 55) + i + seededFloat(seed + i) * 6) * (2 + i * 0.18);
+      if (x === 0) ctx.moveTo(x, y + wave);
+      else ctx.lineTo(x, y + wave);
+    }
+    ctx.stroke();
+  }
+}
+
+function drawBeach(ctx, width, height, horizon) {
+  ctx.fillStyle = "rgba(237,208,142,0.9)";
+  ctx.beginPath();
+  ctx.moveTo(0, horizon + 30);
+  ctx.lineTo(width, horizon + 8);
+  ctx.lineTo(width, height);
+  ctx.lineTo(0, height);
+  ctx.closePath();
+  ctx.fill();
+}
+
+function drawCity(ctx, width, height, horizon, seed, spec) {
+  const base = spec.style === "neon" ? "hsl(242 36% 18%)" : "hsl(218 16% 22%)";
+  const win = spec.style === "neon" ? "rgba(56,255,232,0.86)" : "rgba(255,228,146,0.72)";
+  const buildings = 26;
+  const wStep = Math.ceil(width / buildings);
+
+  for (let i = 0; i < buildings; i++) {
+    const x = i * wStep;
+    const bw = wStep + seededFloat(seed + i * 7) * 16;
+    const bh = 80 + seededFloat(seed + i * 19) * 210;
+    const y = horizon - bh;
+    ctx.fillStyle = base;
+    ctx.fillRect(x, y, bw, bh);
+
+    ctx.fillStyle = win;
+    for (let wy = y + 8; wy < y + bh - 8; wy += 12) {
+      for (let wx = x + 6; wx < x + bw - 6; wx += 10) {
+        if (seededFloat(seed + wx * 3 + wy * 5) > 0.45) ctx.fillRect(wx, wy, 4, 5);
+      }
+    }
+  }
+}
+
+function drawForest(ctx, width, height, horizon, seed) {
+  for (let i = 0; i < 45; i++) {
+    const x = seededFloat(seed + i * 23) * width;
+    const s = 0.5 + seededFloat(seed + i * 31) * 1.2;
+    drawTree(ctx, x, horizon + 18, 64 * s, "hsl(130 48% 30%)");
+  }
+}
+
+function drawDunes(ctx, width, height, horizon, seed) {
+  ctx.fillStyle = "rgba(214,174,98,0.78)";
+  for (let i = 0; i < 5; i++) {
+    const y = horizon + 28 + i * 28;
+    ctx.beginPath();
+    ctx.moveTo(0, y);
+    for (let x = 0; x <= width; x += 22) {
+      const r = Math.sin((x / 90) + i + seededFloat(seed + i * 13) * 4) * 10;
+      ctx.lineTo(x, y + r);
+    }
+    ctx.lineTo(width, height);
+    ctx.lineTo(0, height);
+    ctx.closePath();
+    ctx.fill();
+  }
+}
+
+function drawNebula(ctx, width, height, horizon, seed) {
+  for (let i = 0; i < 10; i++) {
+    const x = seededFloat(seed + i * 67) * width;
+    const y = seededFloat(seed + i * 71) * (horizon - 20);
+    const r = 60 + seededFloat(seed + i * 73) * 120;
+    const c = colorFromSeed(seed + i * 79, 80, 62, 0.16);
+    const g = ctx.createRadialGradient(x, y, 0, x, y, r);
+    g.addColorStop(0, c);
+    g.addColorStop(1, "rgba(0,0,0,0)");
+    ctx.fillStyle = g;
+    ctx.fillRect(x - r, y - r, r * 2, r * 2);
+  }
+}
+
+function drawCat(ctx, x, y, size, color) {
+  ctx.fillStyle = color;
+  ctx.beginPath();
+  ctx.ellipse(x, y, size * 0.35, size * 0.22, 0, 0, Math.PI * 2);
+  ctx.fill();
+  ctx.beginPath();
+  ctx.arc(x + size * 0.22, y - size * 0.2, size * 0.16, 0, Math.PI * 2);
+  ctx.fill();
+  ctx.beginPath();
+  ctx.moveTo(x + size * 0.1, y - size * 0.28);
+  ctx.lineTo(x + size * 0.18, y - size * 0.42);
+  ctx.lineTo(x + size * 0.26, y - size * 0.28);
+  ctx.closePath();
+  ctx.fill();
+  ctx.beginPath();
+  ctx.moveTo(x + size * 0.22, y - size * 0.29);
+  ctx.lineTo(x + size * 0.3, y - size * 0.43);
+  ctx.lineTo(x + size * 0.34, y - size * 0.28);
+  ctx.closePath();
+  ctx.fill();
+  ctx.strokeStyle = color;
+  ctx.lineWidth = Math.max(3, size * 0.045);
+  ctx.beginPath();
+  ctx.moveTo(x - size * 0.3, y - size * 0.05);
+  ctx.quadraticCurveTo(x - size * 0.5, y - size * 0.45, x - size * 0.18, y - size * 0.44);
+  ctx.stroke();
+}
+
+function drawDog(ctx, x, y, size, color) {
+  ctx.fillStyle = color;
+  ctx.beginPath();
+  ctx.ellipse(x, y, size * 0.37, size * 0.23, 0, 0, Math.PI * 2);
+  ctx.fill();
+  ctx.beginPath();
+  ctx.ellipse(x + size * 0.28, y - size * 0.18, size * 0.17, size * 0.14, 0, 0, Math.PI * 2);
+  ctx.fill();
+  ctx.beginPath();
+  ctx.ellipse(x + size * 0.36, y - size * 0.25, size * 0.08, size * 0.16, -0.5, 0, Math.PI * 2);
+  ctx.fill();
+}
+
+function drawBird(ctx, x, y, size, color) {
+  ctx.strokeStyle = color;
+  ctx.lineWidth = Math.max(3, size * 0.07);
+  ctx.beginPath();
+  ctx.moveTo(x - size * 0.5, y);
+  ctx.quadraticCurveTo(x - size * 0.2, y - size * 0.35, x, y);
+  ctx.quadraticCurveTo(x + size * 0.2, y - size * 0.35, x + size * 0.5, y);
+  ctx.stroke();
+}
+
+function drawRobot(ctx, x, y, size, color) {
+  ctx.fillStyle = color;
+  ctx.fillRect(x - size * 0.22, y - size * 0.35, size * 0.44, size * 0.44);
+  ctx.fillRect(x - size * 0.17, y + size * 0.1, size * 0.34, size * 0.32);
+  ctx.fillStyle = "rgba(255,255,255,0.75)";
+  ctx.fillRect(x - size * 0.12, y - size * 0.22, size * 0.08, size * 0.06);
+  ctx.fillRect(x + size * 0.04, y - size * 0.22, size * 0.08, size * 0.06);
+}
+
+function drawCar(ctx, x, y, size, color) {
+  ctx.fillStyle = color;
+  ctx.fillRect(x - size * 0.42, y - size * 0.12, size * 0.84, size * 0.24);
+  ctx.beginPath();
+  ctx.moveTo(x - size * 0.26, y - size * 0.12);
+  ctx.lineTo(x - size * 0.1, y - size * 0.3);
+  ctx.lineTo(x + size * 0.2, y - size * 0.3);
+  ctx.lineTo(x + size * 0.32, y - size * 0.12);
+  ctx.closePath();
+  ctx.fill();
+  ctx.fillStyle = "rgba(22,22,22,0.95)";
+  ctx.beginPath();
+  ctx.arc(x - size * 0.24, y + size * 0.16, size * 0.12, 0, Math.PI * 2);
+  ctx.arc(x + size * 0.24, y + size * 0.16, size * 0.12, 0, Math.PI * 2);
+  ctx.fill();
+}
+
+function drawHouse(ctx, x, y, size, color) {
+  ctx.fillStyle = color;
+  ctx.fillRect(x - size * 0.24, y - size * 0.08, size * 0.48, size * 0.36);
+  ctx.beginPath();
+  ctx.moveTo(x - size * 0.3, y - size * 0.08);
+  ctx.lineTo(x, y - size * 0.34);
+  ctx.lineTo(x + size * 0.3, y - size * 0.08);
+  ctx.closePath();
+  ctx.fill();
+  ctx.fillStyle = "rgba(255,255,255,0.7)";
+  ctx.fillRect(x - size * 0.08, y + size * 0.09, size * 0.16, size * 0.19);
+}
+
+function drawTree(ctx, x, y, size, color) {
+  ctx.fillStyle = "hsl(30 50% 25%)";
+  ctx.fillRect(x - size * 0.06, y - size * 0.1, size * 0.12, size * 0.34);
+  ctx.fillStyle = color;
+  ctx.beginPath();
+  ctx.arc(x, y - size * 0.2, size * 0.2, 0, Math.PI * 2);
+  ctx.arc(x - size * 0.16, y - size * 0.1, size * 0.17, 0, Math.PI * 2);
+  ctx.arc(x + size * 0.16, y - size * 0.08, size * 0.15, 0, Math.PI * 2);
+  ctx.fill();
+}
+
+function drawDragon(ctx, x, y, size, color) {
+  ctx.fillStyle = color;
+  ctx.beginPath();
+  ctx.ellipse(x, y, size * 0.34, size * 0.19, -0.15, 0, Math.PI * 2);
+  ctx.fill();
+  ctx.beginPath();
+  ctx.moveTo(x + size * 0.1, y - size * 0.1);
+  ctx.lineTo(x + size * 0.4, y - size * 0.28);
+  ctx.lineTo(x + size * 0.2, y + size * 0.03);
+  ctx.closePath();
+  ctx.fill();
+  ctx.beginPath();
+  ctx.moveTo(x - size * 0.15, y - size * 0.08);
+  ctx.lineTo(x - size * 0.42, y - size * 0.27);
+  ctx.lineTo(x - size * 0.24, y + size * 0.04);
+  ctx.closePath();
+  ctx.fill();
+}
+
+function drawAbstractSubject(ctx, x, y, size, color) {
+  ctx.fillStyle = color;
+  ctx.beginPath();
+  ctx.arc(x, y - size * 0.1, size * 0.22, 0, Math.PI * 2);
+  ctx.fill();
+  ctx.fillRect(x - size * 0.16, y - size * 0.08, size * 0.32, size * 0.36);
+}
+
+function drawFilmOverlay(ctx, width, height, spec) {
+  const strength = spec.style === "retro" ? 0.1 : 0.06;
+  ctx.fillStyle = `rgba(0,0,0,${strength})`;
   for (let y = 0; y < height; y += 4) {
     ctx.fillRect(0, y, width, 1);
   }
+}
 
-  ctx.fillStyle = "rgba(255,255,255,0.85)";
-  ctx.font = "bold 32px monospace";
-  ctx.fillText("LOCAL GENERATOR", 28, 46);
-  ctx.font = "24px monospace";
-  ctx.fillStyle = "rgba(255,255,255,0.75)";
-  const label = trimToChars(prompt, 70);
-  ctx.fillText(label, 28, height - 26);
-
-  return canvas.toDataURL("image/png");
+function pixelateCanvas(ctx, width, height, block = 4) {
+  const copy = ctx.getImageData(0, 0, width, height);
+  const temp = document.createElement("canvas");
+  temp.width = Math.max(1, Math.floor(width / block));
+  temp.height = Math.max(1, Math.floor(height / block));
+  const tctx = temp.getContext("2d");
+  tctx.imageSmoothingEnabled = false;
+  const source = document.createElement("canvas");
+  source.width = width;
+  source.height = height;
+  source.getContext("2d").putImageData(copy, 0, 0);
+  tctx.drawImage(source, 0, 0, temp.width, temp.height);
+  ctx.imageSmoothingEnabled = false;
+  ctx.clearRect(0, 0, width, height);
+  ctx.drawImage(temp, 0, 0, width, height);
+  ctx.imageSmoothingEnabled = true;
 }
 
 function hashString(text) {
