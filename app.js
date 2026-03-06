@@ -11,6 +11,14 @@ const imageModalClose = document.getElementById("image-modal-close");
 const queryCounts = new Map();
 const SpeechRecognitionAPI = window.SpeechRecognition || window.webkitSpeechRecognition;
 const hasSpeechSynthesis = "speechSynthesis" in window && "SpeechSynthesisUtterance" in window;
+const STOP_WORDS = new Set([
+  "a", "an", "and", "are", "as", "at", "be", "been", "being", "by",
+  "can", "do", "does", "did", "for", "from", "how", "i", "if", "in",
+  "into", "is", "it", "its", "just", "me", "my", "of", "on", "or",
+  "please", "show", "tell", "that", "the", "their", "there", "they",
+  "this", "to", "too", "was", "we", "what", "when", "where", "which",
+  "who", "why", "with", "would", "you", "your", "about", "like",
+]);
 
 let currentMode = modeSelect.value;
 let recognition = null;
@@ -233,10 +241,11 @@ function labelForMode(mode) {
 
 async function answerTextMode(query, mode, repeatCount) {
   appendLine("system", "FETCHING WIKIPEDIA + DUCKDUCKGO...");
+  const effectiveSearchQuery = buildSearchQuery(query);
 
   const [wikiResult, duckResult] = await Promise.allSettled([
-    getWikiResults(query, 5),
-    getDuckResult(query),
+    getWikiResults(effectiveSearchQuery, 5, query),
+    getDuckResult(effectiveSearchQuery, query),
   ]);
 
   const wikiItemsRaw = wikiResult.status === "fulfilled" ? wikiResult.value : [];
@@ -484,9 +493,66 @@ function normalizeQuery(query) {
   return query.toLowerCase().replace(/\s+/g, " ").trim();
 }
 
+function sanitizeSearchQuery(query, maxLen = 120) {
+  const clean = normalizeQuery(query)
+    .replace(/[^a-z0-9\s-]/g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+  return clean.length > maxLen ? clean.slice(0, maxLen).trim() : clean;
+}
+
+function extractKeywords(query, maxWords = 8) {
+  const words = sanitizeSearchQuery(query, 200)
+    .split(" ")
+    .filter((w) => w.length > 2 && !STOP_WORDS.has(w));
+  const uniq = [];
+  const seen = new Set();
+  for (const w of words) {
+    if (seen.has(w)) continue;
+    seen.add(w);
+    uniq.push(w);
+    if (uniq.length >= maxWords) break;
+  }
+  return uniq;
+}
+
+function buildSearchQuery(query) {
+  const clean = sanitizeSearchQuery(query, 220);
+  if (clean.length <= 80) return clean;
+  const keywords = extractKeywords(clean, 8);
+  if (keywords.length >= 2) return keywords.join(" ");
+  return clean.slice(0, 80).trim();
+}
+
+function buildQueryVariants(query, originalQuery = "") {
+  const variants = [];
+  const seen = new Set();
+
+  const push = (text) => {
+    const v = sanitizeSearchQuery(text);
+    if (!v || seen.has(v)) return;
+    seen.add(v);
+    variants.push(v);
+  };
+
+  const primary = buildSearchQuery(query || originalQuery);
+  push(primary);
+  push(originalQuery);
+
+  const originalKeywords = extractKeywords(originalQuery || query, 6);
+  if (originalKeywords.length) push(originalKeywords.join(" "));
+  if (originalKeywords.length >= 3) push(originalKeywords.slice(0, 3).join(" "));
+
+  const queryKeywords = extractKeywords(query, 5);
+  if (queryKeywords.length) push(queryKeywords.join(" "));
+
+  return variants.slice(0, 5);
+}
+
 function filterTitlesByRelevance(query, titles) {
-  const q = normalizeQuery(query);
-  const qWords = q.split(" ").filter(Boolean);
+  const q = sanitizeSearchQuery(query, 180);
+  if (!q) return (titles || []).filter(Boolean);
+  const qWords = extractKeywords(q, 10);
   const exactWord = new RegExp(`\\b${escapeRegex(q)}\\b`, "i");
   const shortPlural = new RegExp(`\\b${escapeRegex(q)}s\\b`, "i");
 
@@ -500,12 +566,13 @@ function filterTitlesByRelevance(query, titles) {
     }
     if (t === q || t.includes(q) || q.includes(t)) return true;
 
+    if (!qWords.length) return true;
     const overlap = qWords.reduce((count, word) => {
       const rx = new RegExp(`\\b${escapeRegex(word)}\\b`, "i");
       return count + (rx.test(title) ? 1 : 0);
     }, 0);
-
-    return overlap >= Math.ceil(qWords.length / 2);
+    const threshold = qWords.length <= 2 ? 1 : Math.min(3, Math.ceil(qWords.length / 3));
+    return overlap >= threshold;
   });
 }
 
@@ -1154,12 +1221,27 @@ function trimToChars(text, maxChars) {
   return `${text.slice(0, maxChars - 3).trim()}...`;
 }
 
-async function getWikiResults(query, limit = 5) {
-  const titles = await wikiSearchTitles(query, limit);
-  if (!titles.length) return [];
+async function getWikiResults(query, limit = 5, originalQuery = "") {
+  const variants = buildQueryVariants(query, originalQuery);
+  const titleSet = new Set();
+  const mergedTitles = [];
+
+  for (const variant of variants) {
+    const titles = await wikiSearchTitles(variant, Math.max(limit * 2, 10));
+    for (const title of titles) {
+      const key = normalizeQuery(title);
+      if (!key || titleSet.has(key)) continue;
+      titleSet.add(key);
+      mergedTitles.push(title);
+      if (mergedTitles.length >= Math.max(limit * 3, 15)) break;
+    }
+    if (mergedTitles.length >= Math.max(limit * 2, 10)) break;
+  }
+
+  if (!mergedTitles.length) return [];
 
   const results = await Promise.all(
-    titles.map(async (title) => {
+    mergedTitles.map(async (title) => {
       try {
         return await getWikiSummary(title);
       } catch {
@@ -1255,13 +1337,16 @@ async function getWikimediaImages(topic, limit = 24, repeatCount = 0) {
 }
 
 async function wikiSearchTitles(query, limit = 1, offset = 0) {
-  const cleanQuery = (query || "").trim();
+  const cleanQuery = sanitizeSearchQuery(query || "");
   if (!cleanQuery) return [];
 
   const phrase = `"${cleanQuery.replace(/"/g, "")}"`;
-  const srsearch = cleanQuery.includes(" ")
-    ? `${phrase} ${cleanQuery}`
-    : `intitle:${phrase} ${cleanQuery}`;
+  const wordCount = cleanQuery.split(/\s+/).filter(Boolean).length;
+  const srsearch = wordCount > 5
+    ? cleanQuery
+    : cleanQuery.includes(" ")
+      ? `${phrase} ${cleanQuery}`
+      : `intitle:${phrase} ${cleanQuery}`;
 
   const searchUrl =
     `https://en.wikipedia.org/w/api.php?action=query&list=search` +
@@ -1304,18 +1389,24 @@ async function getWikiSummary(title) {
   };
 }
 
-async function getDuckResult(query) {
-  const url = `https://api.duckduckgo.com/?q=${encodeURIComponent(query)}&format=json&no_html=1&skip_disambig=1&no_redirect=1`;
-  const res = await fetch(url);
-  if (!res.ok) return null;
-  const data = await res.json();
+async function getDuckResult(query, originalQuery = "") {
+  const variants = buildQueryVariants(query, originalQuery);
 
-  let text = data.AbstractText || data.Answer || data.Definition || "";
-  const relatedTexts = collectRelatedTopics(data.RelatedTopics || [], []);
-  if (!text) text = relatedTexts[0] || "";
-  if (!text && !relatedTexts.length) return null;
+  for (const variant of variants) {
+    const url = `https://api.duckduckgo.com/?q=${encodeURIComponent(variant)}&format=json&no_html=1&skip_disambig=1&no_redirect=1`;
+    const res = await fetch(url);
+    if (!res.ok) continue;
+    const data = await res.json();
 
-  return { text, relatedTexts };
+    let text = data.AbstractText || data.Answer || data.Definition || "";
+    const relatedTexts = collectRelatedTopics(data.RelatedTopics || [], []);
+    if (!text) text = relatedTexts[0] || "";
+    if (!text && !relatedTexts.length) continue;
+
+    return { text, relatedTexts };
+  }
+
+  return null;
 }
 
 function collectRelatedTopics(topics, bucket = []) {
