@@ -2,13 +2,19 @@ const input = document.getElementById("user-input");
 const sendBtn = document.getElementById("send-btn");
 const output = document.getElementById("output");
 const modeSelect = document.getElementById("mode-select");
+const voiceBtn = document.getElementById("voice-btn");
+const voiceStatus = document.getElementById("voice-status");
 const imageModal = document.getElementById("image-modal");
 const imageModalImg = document.getElementById("image-modal-img");
 const imageModalCaption = document.getElementById("image-modal-caption");
 const imageModalClose = document.getElementById("image-modal-close");
 const queryCounts = new Map();
+const SpeechRecognitionAPI = window.SpeechRecognition || window.webkitSpeechRecognition;
 
 let currentMode = modeSelect.value;
+let recognition = null;
+let voiceListening = false;
+let voiceDetectedText = false;
 
 modeSelect.addEventListener("change", () => {
   currentMode = modeSelect.value;
@@ -20,10 +26,97 @@ input.addEventListener("keydown", (e) => {
   if (e.key === "Enter") onSend();
   if (e.key === "Escape") closeImageModal();
 });
+voiceBtn.addEventListener("click", toggleVoiceInput);
 imageModalClose.addEventListener("click", closeImageModal);
 imageModal.addEventListener("click", (e) => {
   if (e.target === imageModal) closeImageModal();
 });
+document.addEventListener("keydown", (e) => {
+  if (e.key === "Escape") {
+    closeImageModal();
+    if (voiceListening) stopVoiceInput();
+  }
+});
+setupVoiceInput();
+
+function setupVoiceInput() {
+  if (!SpeechRecognitionAPI) {
+    voiceBtn.disabled = true;
+    voiceStatus.textContent = "Voice: not supported in this browser";
+    appendLine("system", "Voice input unavailable in this browser.");
+    return;
+  }
+
+  recognition = new SpeechRecognitionAPI();
+  recognition.lang = "en-US";
+  recognition.interimResults = true;
+  recognition.maxAlternatives = 1;
+  recognition.continuous = false;
+
+  recognition.onstart = () => {
+    voiceListening = true;
+    voiceDetectedText = false;
+    voiceBtn.classList.add("active");
+    voiceStatus.textContent = "Voice: listening...";
+  };
+
+  recognition.onresult = (event) => {
+    let transcript = "";
+    let hasFinal = false;
+    for (let i = event.resultIndex; i < event.results.length; i++) {
+      transcript += event.results[i][0].transcript;
+      if (event.results[i].isFinal) hasFinal = true;
+    }
+    if (transcript.trim()) {
+      input.value = transcript.trim();
+      voiceDetectedText = voiceDetectedText || hasFinal || input.value.length > 0;
+    }
+  };
+
+  recognition.onerror = (event) => {
+    voiceStatus.textContent = `Voice error: ${event.error}`;
+    voiceBtn.classList.remove("active");
+    voiceListening = false;
+  };
+
+  recognition.onend = () => {
+    const said = input.value.trim();
+    voiceBtn.classList.remove("active");
+    voiceListening = false;
+    voiceStatus.textContent = "Voice: off";
+    if (voiceDetectedText && said) onSend();
+  };
+
+  voiceStatus.textContent = "Voice: ready";
+}
+
+function toggleVoiceInput() {
+  if (!recognition) {
+    voiceStatus.textContent = "Voice: unavailable";
+    return;
+  }
+  if (voiceListening) {
+    stopVoiceInput();
+  } else {
+    startVoiceInput();
+  }
+}
+
+function startVoiceInput() {
+  try {
+    recognition.start();
+  } catch {
+    // Recognition can throw when already active.
+  }
+}
+
+function stopVoiceInput() {
+  try {
+    recognition.stop();
+  } catch {
+    // No-op when already stopped.
+  }
+}
 
 async function onSend() {
   const query = input.value.trim();

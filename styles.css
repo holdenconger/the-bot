@@ -133,8 +133,33 @@ body {
   cursor: pointer;
 }
 
+#voice-btn {
+  background: transparent;
+  color: var(--text);
+  border: 1px solid var(--line);
+  font-family: "VT323", monospace;
+  font-size: 24px;
+  padding: 3px 10px;
+  cursor: pointer;
+}
+
 #send-btn:hover {
   border-color: var(--text);
+}
+
+#voice-btn:hover {
+  border-color: var(--text);
+}
+
+#voice-btn.active {
+  border-color: #7dff7d;
+  box-shadow: 0 0 10px rgba(125, 255, 125, 0.35);
+}
+
+.voice-status {
+  margin-top: 8px;
+  font-size: 21px;
+  color: var(--text-dim);
 }
 
 .typing {
