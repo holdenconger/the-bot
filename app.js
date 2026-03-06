@@ -2,6 +2,10 @@ const input = document.getElementById("user-input");
 const sendBtn = document.getElementById("send-btn");
 const output = document.getElementById("output");
 const modeSelect = document.getElementById("mode-select");
+const imageModal = document.getElementById("image-modal");
+const imageModalImg = document.getElementById("image-modal-img");
+const imageModalCaption = document.getElementById("image-modal-caption");
+const imageModalClose = document.getElementById("image-modal-close");
 const queryCounts = new Map();
 
 let currentMode = modeSelect.value;
@@ -14,6 +18,11 @@ modeSelect.addEventListener("change", () => {
 sendBtn.addEventListener("click", onSend);
 input.addEventListener("keydown", (e) => {
   if (e.key === "Enter") onSend();
+  if (e.key === "Escape") closeImageModal();
+});
+imageModalClose.addEventListener("click", closeImageModal);
+imageModal.addEventListener("click", (e) => {
+  if (e.target === imageModal) closeImageModal();
 });
 
 async function onSend() {
@@ -1160,6 +1169,7 @@ function appendImage(src, caption = "") {
   const img = document.createElement("img");
   img.src = src;
   img.alt = caption || "Result image";
+  img.addEventListener("click", () => openImageModal(src, caption || "Result image"));
   wrap.appendChild(img);
 
   if (caption) {
@@ -1171,4 +1181,16 @@ function appendImage(src, caption = "") {
 
   output.appendChild(wrap);
   output.scrollTop = output.scrollHeight;
+}
+
+function openImageModal(src, caption) {
+  imageModalImg.src = src;
+  imageModalCaption.textContent = caption || "";
+  imageModal.classList.remove("hidden");
+  imageModal.setAttribute("aria-hidden", "false");
+}
+
+function closeImageModal() {
+  imageModal.classList.add("hidden");
+  imageModal.setAttribute("aria-hidden", "true");
 }
