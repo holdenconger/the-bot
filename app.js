@@ -10,15 +10,19 @@ const imageModalCaption = document.getElementById("image-modal-caption");
 const imageModalClose = document.getElementById("image-modal-close");
 const queryCounts = new Map();
 const SpeechRecognitionAPI = window.SpeechRecognition || window.webkitSpeechRecognition;
+const hasSpeechSynthesis = "speechSynthesis" in window && "SpeechSynthesisUtterance" in window;
 
 let currentMode = modeSelect.value;
 let recognition = null;
 let voiceListening = false;
 let voiceDetectedText = false;
+let voiceLoopEnabled = false;
+let speechNoticeShown = false;
 
 modeSelect.addEventListener("change", () => {
   currentMode = modeSelect.value;
   appendLine("system", `MODE SET: ${labelForMode(currentMode)}`);
+  applyModeSideEffects();
 });
 
 sendBtn.addEventListener("click", onSend);
@@ -39,6 +43,25 @@ document.addEventListener("keydown", (e) => {
 });
 setupVoiceInput();
 
+function isVoiceTalkMode() {
+  return currentMode === "voice";
+}
+
+function applyModeSideEffects() {
+  if (!recognition) return;
+  if (isVoiceTalkMode()) {
+    voiceLoopEnabled = true;
+    voiceStatus.textContent = "Voice mode: listening...";
+    if (!voiceListening) startVoiceInput();
+    return;
+  }
+
+  voiceLoopEnabled = false;
+  if (voiceListening) stopVoiceInput();
+  stopSpeaking();
+  voiceStatus.textContent = "Voice: ready";
+}
+
 function setupVoiceInput() {
   if (!SpeechRecognitionAPI) {
     voiceBtn.disabled = true;
@@ -57,7 +80,7 @@ function setupVoiceInput() {
     voiceListening = true;
     voiceDetectedText = false;
     voiceBtn.classList.add("active");
-    voiceStatus.textContent = "Voice: listening...";
+    voiceStatus.textContent = isVoiceTalkMode() ? "Voice mode: listening..." : "Voice: listening...";
   };
 
   recognition.onresult = (event) => {
@@ -83,11 +106,21 @@ function setupVoiceInput() {
     const said = input.value.trim();
     voiceBtn.classList.remove("active");
     voiceListening = false;
+    if (voiceDetectedText && said) {
+      onSend();
+      return;
+    }
+    if (isVoiceTalkMode() && voiceLoopEnabled) {
+      voiceStatus.textContent = "Voice mode: listening...";
+      setTimeout(() => {
+        if (isVoiceTalkMode() && voiceLoopEnabled && !voiceListening) startVoiceInput();
+      }, 240);
+      return;
+    }
     voiceStatus.textContent = "Voice: off";
-    if (voiceDetectedText && said) onSend();
   };
 
-  voiceStatus.textContent = "Voice: ready";
+  voiceStatus.textContent = isVoiceTalkMode() ? "Voice mode: ready" : "Voice: ready";
 }
 
 function toggleVoiceInput() {
@@ -96,8 +129,11 @@ function toggleVoiceInput() {
     return;
   }
   if (voiceListening) {
+    voiceLoopEnabled = false;
     stopVoiceInput();
+    voiceStatus.textContent = isVoiceTalkMode() ? "Voice mode: paused" : "Voice: off";
   } else {
+    if (isVoiceTalkMode()) voiceLoopEnabled = true;
     startVoiceInput();
   }
 }
@@ -124,14 +160,17 @@ async function onSend() {
 
   input.value = "";
   appendLine("user", query);
+  if (isVoiceTalkMode()) voiceStatus.textContent = "Voice mode: searching...";
 
   if (query.toLowerCase().startsWith("/create ")) {
     const prompt = query.slice(8).trim();
     if (!prompt) {
       appendLine("error", "Usage: /create your image prompt");
+      if (isVoiceTalkMode()) await speakAndMaybeRelisten("Usage is create, then your image prompt.");
       return;
     }
-    createLocalImage(prompt);
+    const msg = createLocalImage(prompt);
+    if (isVoiceTalkMode()) await speakAndMaybeRelisten(msg);
     return;
   }
 
@@ -141,7 +180,9 @@ async function onSend() {
   if (isMathExpression(query) && currentMode !== "images") {
     try {
       const result = safeMath(query);
-      typeLine("ai", `CALCULATION: ${result}`);
+      const msg = `CALCULATION: ${result}`;
+      typeLine("ai", msg);
+      if (isVoiceTalkMode()) await speakAndMaybeRelisten(msg);
       return;
     } catch {
       // If parsing fails, continue to web search.
@@ -149,11 +190,13 @@ async function onSend() {
   }
 
   if (currentMode === "images") {
-    await imageOnlyMode(query, repeatCount);
+    const msg = await imageOnlyMode(query, repeatCount);
+    if (isVoiceTalkMode()) await speakAndMaybeRelisten(msg);
     return;
   }
 
-  await answerTextMode(query, currentMode, repeatCount);
+  const msg = await answerTextMode(query, currentMode, repeatCount);
+  if (isVoiceTalkMode()) await speakAndMaybeRelisten(msg);
 }
 
 function handleCommand(query) {
@@ -167,13 +210,14 @@ function handleCommand(query) {
 
   if (q.startsWith("/mode ")) {
     const next = q.slice(6).trim();
-    if (!["full", "summarize", "images"].includes(next)) {
-      appendLine("error", "Use /mode full, /mode summarize, or /mode images");
+    if (!["full", "summarize", "images", "voice"].includes(next)) {
+      appendLine("error", "Use /mode full, /mode summarize, /mode images, or /mode voice");
       return true;
     }
     currentMode = next;
     modeSelect.value = next;
     appendLine("system", `MODE SET: ${labelForMode(currentMode)}`);
+    applyModeSideEffects();
     return true;
   }
 
@@ -183,6 +227,7 @@ function handleCommand(query) {
 function labelForMode(mode) {
   if (mode === "full") return "FULL ANSWER";
   if (mode === "summarize") return "SUMMARIZE";
+  if (mode === "voice") return "VOICE TALK";
   return "IMAGE ONLY";
 }
 
@@ -201,10 +246,12 @@ async function answerTextMode(query, mode, repeatCount) {
   const built = buildFullAnswer(query, wikiItems, duck, repeatCount);
   const longAnswer = built.text;
   if (!longAnswer) {
-    appendLine("error", "No useful result. Try a more specific question.");
-    return;
+    const msg = "No useful result. Try a more specific question.";
+    appendLine("error", msg);
+    return msg;
   }
 
+  let spokenText = longAnswer;
   if (mode === "summarize") {
     const summarySeed = buildSummarySeed(query, wikiItems, duck, repeatCount) || longAnswer;
     const summarized = await summarizeSmart(summarySeed, query, repeatCount);
@@ -214,6 +261,7 @@ async function answerTextMode(query, mode, repeatCount) {
       appendLine("system", "SUMMARIZER API UNAVAILABLE: LOCAL FALLBACK");
     }
     typeLine("ai", summarized.text);
+    spokenText = summarized.text;
   } else {
     typeLine("ai", longAnswer);
   }
@@ -223,6 +271,8 @@ async function answerTextMode(query, mode, repeatCount) {
   } else if (wikiItems?.[0]?.image) {
     appendImage(wikiItems[0].image, wikiItems[0].title || "Wikipedia image");
   }
+
+  return spokenText;
 }
 
 async function imageOnlyMode(query, repeatCount = 0) {
@@ -230,21 +280,85 @@ async function imageOnlyMode(query, repeatCount = 0) {
   const images = await getTopicImages(query, 6, repeatCount);
 
   if (!images.length) {
-    appendLine("error", "No images found. Try a clearer topic.");
-    return;
+    const msg = "No images found. Try a clearer topic.";
+    appendLine("error", msg);
+    return msg;
   }
 
+  const msg = `I found ${images.length} images for ${query}.`;
   appendLine("ai", `Showing ${images.length} image(s) for "${query}"`);
   for (const item of images) {
     appendImage(item.src, item.caption);
   }
+  return msg;
 }
 
 function createLocalImage(prompt) {
   appendLine("system", "LOCAL IMAGE GENERATOR: NO API");
   const dataUrl = generateProceduralImage(prompt);
+  const msg = `Generated local image for ${prompt}.`;
   appendLine("ai", `Generated local image for "${prompt}"`);
   appendImage(dataUrl, `Local generated image: ${prompt}`);
+  return msg;
+}
+
+async function speakAndMaybeRelisten(text) {
+  const clean = speechFriendlyText(text);
+  if (clean) {
+    voiceStatus.textContent = "Voice mode: speaking...";
+    await speakText(clean);
+  }
+  if (isVoiceTalkMode() && voiceLoopEnabled) {
+    voiceStatus.textContent = "Voice mode: listening...";
+    setTimeout(() => {
+      if (isVoiceTalkMode() && voiceLoopEnabled && !voiceListening) startVoiceInput();
+    }, 260);
+  } else if (!voiceListening) {
+    voiceStatus.textContent = "Voice: off";
+  }
+}
+
+function speechFriendlyText(text) {
+  return trimToChars(
+    String(text || "")
+      .replace(/https?:\/\/\S+/gi, "")
+      .replace(/\s+/g, " ")
+      .trim(),
+    280
+  );
+}
+
+function speakText(text) {
+  return new Promise((resolve) => {
+    if (!hasSpeechSynthesis) {
+      if (!speechNoticeShown) {
+        appendLine("system", "Voice output unavailable in this browser.");
+        speechNoticeShown = true;
+      }
+      resolve();
+      return;
+    }
+    try {
+      window.speechSynthesis.cancel();
+      const utterance = new SpeechSynthesisUtterance(text);
+      utterance.rate = 1.02;
+      utterance.pitch = 1;
+      utterance.onend = () => resolve();
+      utterance.onerror = () => resolve();
+      window.speechSynthesis.speak(utterance);
+    } catch {
+      resolve();
+    }
+  });
+}
+
+function stopSpeaking() {
+  if (!hasSpeechSynthesis) return;
+  try {
+    window.speechSynthesis.cancel();
+  } catch {
+    // ignore
+  }
 }
 
 function buildFullAnswer(query, wikiItems, duck, repeatCount) {
