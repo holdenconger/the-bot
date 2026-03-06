@@ -19,6 +19,17 @@ const STOP_WORDS = new Set([
   "this", "to", "too", "was", "we", "what", "when", "where", "which",
   "who", "why", "with", "would", "you", "your", "about", "like",
 ]);
+const AI_CONFIG = {
+  // Optional "real AI" for VOICE TALK mode (OpenAI-compatible endpoint).
+  // Example:
+  // baseUrl: "https://openrouter.ai/api/v1",
+  // apiKey: "YOUR_KEY",
+  // model: "meta-llama/llama-3.1-8b-instruct:free"
+  baseUrl: "https://openrouter.ai/api/v1",
+  apiKey: "",
+  model: "meta-llama/llama-3.1-8b-instruct:free",
+  maxHistoryTurns: 6,
+};
 
 let currentMode = modeSelect.value;
 let recognition = null;
@@ -26,6 +37,8 @@ let voiceListening = false;
 let voiceDetectedText = false;
 let voiceLoopEnabled = false;
 let speechNoticeShown = false;
+let aiNoticeShown = false;
+const voiceChatMemory = [];
 
 modeSelect.addEventListener("change", () => {
   currentMode = modeSelect.value;
@@ -197,6 +210,12 @@ async function onSend() {
     }
   }
 
+  if (isVoiceTalkMode()) {
+    const msg = await answerVoiceTalkMode(query, repeatCount);
+    await speakAndMaybeRelisten(msg);
+    return;
+  }
+
   if (currentMode === "images") {
     const msg = await imageOnlyMode(query, repeatCount);
     if (isVoiceTalkMode()) await speakAndMaybeRelisten(msg);
@@ -212,7 +231,17 @@ function handleCommand(query) {
 
   if (q === "/clear") {
     output.innerHTML = "";
+    voiceChatMemory.length = 0;
     appendLine("system", "CLEARED.");
+    return true;
+  }
+
+  if (q === "c=voice" || q === "c=full" || q === "c=summarize" || q === "c=images") {
+    const next = q.slice(2);
+    currentMode = next;
+    modeSelect.value = next;
+    appendLine("system", `MODE SET: ${labelForMode(currentMode)}`);
+    applyModeSideEffects();
     return true;
   }
 
@@ -237,6 +266,171 @@ function labelForMode(mode) {
   if (mode === "summarize") return "SUMMARIZE";
   if (mode === "voice") return "VOICE TALK";
   return "IMAGE ONLY";
+}
+
+async function answerVoiceTalkMode(query, repeatCount) {
+  appendLine("system", "VOICE AI THINKING...");
+  const effectiveSearchQuery = buildSearchQuery(query);
+
+  const [wikiResult, duckResult] = await Promise.allSettled([
+    getWikiResults(effectiveSearchQuery, 5, query),
+    getDuckResult(effectiveSearchQuery, query),
+  ]);
+
+  const wikiItemsRaw = wikiResult.status === "fulfilled" ? wikiResult.value : [];
+  const wikiItems = selectRelevantWiki(query, wikiItemsRaw);
+  const duck = duckResult.status === "fulfilled" ? duckResult.value : null;
+
+  const factPack = buildFactPack(query, wikiItems, duck, repeatCount);
+  const reply = await generateVoiceAIReply(query, factPack);
+  const safeReply = reply || "I could not find a solid answer yet. Try asking in a shorter way.";
+
+  typeLine("ai", safeReply);
+  if (factPack.primaryWiki?.image) {
+    appendImage(factPack.primaryWiki.image, factPack.primaryWiki.title || "Related image");
+  }
+
+  rememberVoiceTurn("user", query);
+  rememberVoiceTurn("assistant", safeReply);
+  return safeReply;
+}
+
+function buildFactPack(query, wikiItems, duck, repeatCount) {
+  const built = buildFullAnswer(query, wikiItems, duck, repeatCount);
+  const wikiFacts = (wikiItems || [])
+    .filter((x) => x?.summary)
+    .slice(0, 3)
+    .map((x) => `${x.title}: ${trimToChars(x.summary, 220)}`);
+  const duckFacts = [duck?.text || "", ...(duck?.relatedTexts || [])]
+    .filter(Boolean)
+    .slice(0, 3)
+    .map((x) => trimToChars(x, 220));
+  return {
+    text: built.text || "",
+    primaryWiki: built.primaryWiki || wikiItems?.[0] || null,
+    wikiFacts,
+    duckFacts,
+  };
+}
+
+function rememberVoiceTurn(role, content) {
+  if (!content) return;
+  voiceChatMemory.push({ role, content: String(content).trim() });
+  const maxEntries = Math.max(2, AI_CONFIG.maxHistoryTurns * 2);
+  while (voiceChatMemory.length > maxEntries) voiceChatMemory.shift();
+}
+
+async function generateVoiceAIReply(query, factPack) {
+  if (canUseExternalAI()) {
+    const aiReply = await callExternalAIReply(query, factPack);
+    if (aiReply) return aiReply;
+  } else if (!aiNoticeShown) {
+    appendLine("system", "AI API not configured: using local conversational brain.");
+    aiNoticeShown = true;
+  }
+  return composeLocalVoiceReply(query, factPack);
+}
+
+function canUseExternalAI() {
+  return Boolean(
+    AI_CONFIG.apiKey &&
+    AI_CONFIG.baseUrl &&
+    AI_CONFIG.model
+  );
+}
+
+async function callExternalAIReply(query, factPack) {
+  try {
+    const recentMemory = voiceChatMemory.slice(-Math.max(0, AI_CONFIG.maxHistoryTurns * 2));
+    const messages = [
+      {
+        role: "system",
+        content:
+          "You are a friendly voice assistant. Speak naturally and clearly. " +
+          "Use the factual context provided by tools, and keep replies concise (2-5 sentences). " +
+          "If context is weak, say that briefly and ask one clarifying question.",
+      },
+      ...recentMemory,
+      {
+        role: "user",
+        content:
+          `User question: ${query}\n\n` +
+          `Tool context (use this as ground truth):\n` +
+          `${formatFactPackForPrompt(factPack)}`,
+      },
+    ];
+
+    const res = await fetch(`${AI_CONFIG.baseUrl.replace(/\/$/, "")}/chat/completions`, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        Authorization: `Bearer ${AI_CONFIG.apiKey}`,
+      },
+      body: JSON.stringify({
+        model: AI_CONFIG.model,
+        messages,
+        temperature: 0.6,
+      }),
+    });
+
+    if (!res.ok) return "";
+    const data = await res.json();
+    const content = normalizeAIContent(data?.choices?.[0]?.message?.content);
+    return trimToChars(content, 520);
+  } catch {
+    return "";
+  }
+}
+
+function formatFactPackForPrompt(factPack) {
+  const lines = [];
+  if (factPack?.wikiFacts?.length) {
+    lines.push("Wikipedia:");
+    for (const item of factPack.wikiFacts) lines.push(`- ${item}`);
+  }
+  if (factPack?.duckFacts?.length) {
+    lines.push("DuckDuckGo:");
+    for (const item of factPack.duckFacts) lines.push(`- ${item}`);
+  }
+  if (!lines.length && factPack?.text) lines.push(factPack.text);
+  return lines.join("\n");
+}
+
+function normalizeAIContent(content) {
+  if (typeof content === "string") return content.trim();
+  if (Array.isArray(content)) {
+    return content
+      .map((part) => (typeof part === "string" ? part : part?.text || ""))
+      .join(" ")
+      .trim();
+  }
+  return "";
+}
+
+function composeLocalVoiceReply(query, factPack) {
+  const lower = normalizeQuery(query);
+  const wikiLine = factPack?.wikiFacts?.[0] || "";
+  const duckLine = factPack?.duckFacts?.[0] || "";
+
+  if (!wikiLine && !duckLine) {
+    return "I couldn't find a strong answer yet. Try a shorter question with the main topic first.";
+  }
+
+  const openers = [
+    "Here is what I found.",
+    "Alright, I checked that for you.",
+    "I looked it up, and here is the summary.",
+  ];
+  const opener = openers[Math.floor(Math.random() * openers.length)];
+
+  if (/\b(compare|difference|vs|versus)\b/.test(lower) && factPack?.wikiFacts?.length > 1) {
+    return `${opener} ${factPack.wikiFacts[0]} Also, ${factPack.wikiFacts[1]} The key difference is in their purpose and context.`;
+  }
+
+  if (wikiLine && duckLine) {
+    return `${opener} ${wikiLine} Also, ${duckLine}`;
+  }
+  return `${opener} ${wikiLine || duckLine}`;
 }
 
 async function answerTextMode(query, mode, repeatCount) {
