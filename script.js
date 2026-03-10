@@ -8,7 +8,15 @@ if (searchForm && searchInput) {
     const value = searchInput.value.trim();
 
     if (value === "1234") {
-      window.location.href = "games.html";
+      const isHtmlPreviewHost = window.location.hostname === "htmlpreview.github.io";
+
+      if (isHtmlPreviewHost && window.location.search.length > 1) {
+        const previewTarget = decodeURIComponent(window.location.search.slice(1));
+        const gamesTarget = previewTarget.replace(/index\.html?$/i, "games.html");
+        window.location.href = `${window.location.origin}${window.location.pathname}?${gamesTarget}`;
+      } else {
+        window.location.href = "games.html";
+      }
       return;
     }
 
