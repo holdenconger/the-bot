@@ -1,0 +1,98 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>BrightPath Academy</title>
+    <link rel="stylesheet" href="styles.css" />
+  </head>
+  <body>
+    <header class="top-header">
+      <div class="container nav">
+        <h1>BrightPath Academy</h1>
+        <nav>
+          <a href="#courses">Courses</a>
+          <a href="#announcements">Announcements</a>
+          <a href="#resources">Resources</a>
+        </nav>
+      </div>
+    </header>
+
+    <main>
+      <section class="hero container">
+        <div class="hero-copy">
+          <h2>Learn smarter every day.</h2>
+          <p>
+            Welcome to the BrightPath student learning hub. Access classes,
+            find resources, and keep up with your weekly study goals.
+          </p>
+          <form id="searchForm" class="search-row">
+            <input
+              id="searchInput"
+              type="text"
+              placeholder="Search courses, lessons, resources..."
+              aria-label="Search"
+            />
+            <button type="submit">Search</button>
+          </form>
+        </div>
+        <div class="hero-panel">
+          <h3>This Week at a Glance</h3>
+          <ul>
+            <li>Math Quiz — Wednesday</li>
+            <li>Science Lab — Thursday</li>
+            <li>History Essay — Friday</li>
+            <li>Reading Circle — Monday</li>
+          </ul>
+        </div>
+      </section>
+
+      <section id="courses" class="container section">
+        <h3>Featured Courses</h3>
+        <div class="card-grid">
+          <article class="card">
+            <h4>Mathematics</h4>
+            <p>Algebra, geometry, and practical problem-solving lessons.</p>
+          </article>
+          <article class="card">
+            <h4>Science</h4>
+            <p>Explore biology, chemistry, and physics through projects.</p>
+          </article>
+          <article class="card">
+            <h4>Literature</h4>
+            <p>Read classic and modern texts with guided discussion.</p>
+          </article>
+          <article class="card">
+            <h4>Computer Studies</h4>
+            <p>Build digital skills with coding and web design basics.</p>
+          </article>
+        </div>
+      </section>
+
+      <section id="announcements" class="container section">
+        <h3>Announcements</h3>
+        <div class="notice-list">
+          <p><strong>Parent Conference:</strong> April 6th at 6:00 PM.</p>
+          <p><strong>Library Week:</strong> Join daily reading challenges.</p>
+          <p><strong>Career Day:</strong> Guest speakers on April 18th.</p>
+        </div>
+      </section>
+
+      <section id="resources" class="container section">
+        <h3>Learning Resources</h3>
+        <div class="resource-grid">
+          <a class="resource" href="#">Homework Planner</a>
+          <a class="resource" href="#">Study Tips Guide</a>
+          <a class="resource" href="#">Exam Preparation Kit</a>
+          <a class="resource" href="#">Classroom Calendar</a>
+        </div>
+      </section>
+    </main>
+
+    <footer class="footer">
+      <p>© 2026 BrightPath Academy. All rights reserved.</p>
+    </footer>
+
+    <script src="script.js"></script>
+  </body>
+</html>
